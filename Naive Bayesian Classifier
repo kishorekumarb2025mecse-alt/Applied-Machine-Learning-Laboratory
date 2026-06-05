@@ -1,0 +1,415 @@
+# ==============================================================
+#  NAÏVE BAYESIAN CLASSIFIER — INDUSTRIAL MANUFACTURING DATASET
+#  Part A: Implementation from Scratch
+#  Part B: Testing on Sample Data & Accuracy Computation
+# ==============================================================
+
+import numpy as np
+import pandas as pd
+from collections import defaultdict
+import warnings
+warnings.filterwarnings('ignore')
+
+# ──────────────────────────────────────────────────────────────
+#  SECTION 1 — DATASET
+# ──────────────────────────────────────────────────────────────
+print("=" * 65)
+print("    INDUSTRIAL MANUFACTURING — NAÏVE BAYES CLASSIFIER")
+print("=" * 65)
+
+data = {
+    'Machine_Type'   : ['CNC',       'CNC',   'Lathe', 'Milling',   'Lathe'],
+    'Temperature'    : ['High',    'Normal', 'Normal',    'High',  'Normal'],
+    'Vibration'      : ['High',       'Low',    'Low',    'High',    'High'],
+    'Shift'          : ['Night',      'Day',    'Day',   'Night',     'Day'],
+    'Product_Quality': ['Defective', 'Good',   'Good','Defective',  'Good'],
+}
+
+df = pd.DataFrame(data)
+print("\nDataset:")
+print(df.to_string(index=False))
+print(f"\n  Total Samples  : {len(df)}")
+print(f"  Features       : {list(df.columns[:-1])}")
+print(f"  Class Counts   : {df['Product_Quality'].value_counts().to_dict()}")
+
+
+# ──────────────────────────────────────────────────────────────
+#  PART A — NAÏVE BAYES CLASSIFIER FROM SCRATCH
+# ──────────────────────────────────────────────────────────────
+
+class NaiveBayesClassifier:
+    """
+    Categorical Naïve Bayes Classifier with Laplace (Add-1) Smoothing.
+
+    Bayes' Theorem:
+        P(class | x₁…xₙ) ∝ P(class) × ∏ P(xᵢ | class)
+
+    Laplace Smoothing (avoids zero probabilities):
+        P(xᵢ=v | class) = (count(xᵢ=v, class) + 1)
+                          ──────────────────────────────
+                          (N_class + |unique_values(xᵢ)|)
+    """
+
+    def __init__(self, laplace: bool = True):
+        self.laplace      = laplace
+        self.priors       = {}      # P(class)
+        self.likelihoods  = {}      # P(feature=value | class)
+        self.classes      = []
+        self.features     = []
+        self.vocab        = {}      # Unique values per feature
+
+    # ── Training ──────────────────────────────────────────────
+    def fit(self, X: pd.DataFrame, y: pd.Series):
+        self.classes  = list(y.unique())
+        self.features = list(X.columns)
+        N             = len(y)
+
+        for feat in self.features:
+            self.vocab[feat] = list(X[feat].unique())
+
+        # Step 1 — Prior Probabilities: P(class)
+        for cls in self.classes:
+            self.priors[cls] = int((y == cls).sum()) / N
+
+        # Step 2 — Likelihood Probabilities: P(feat=val | class)
+        for feat in self.features:
+            k = len(self.vocab[feat])          # Vocabulary size for smoothing
+            self.likelihoods[feat] = {}
+
+            for cls in self.classes:
+                subset  = X[y == cls][feat]
+                n_cls   = len(subset)
+                self.likelihoods[feat][cls] = {}
+
+                for val in self.vocab[feat]:
+                    cnt = int((subset == val).sum())
+                    if self.laplace:
+                        self.likelihoods[feat][cls][val] = (cnt + 1) / (n_cls + k)
+                    else:
+                        self.likelihoods[feat][cls][val] = cnt / n_cls if n_cls else 0
+        return self
+
+    # ── Inference ─────────────────────────────────────────────
+    def _raw_scores(self, row: pd.Series) -> dict:
+        scores = {}
+        for cls in self.classes:
+            p = self.priors[cls]
+            for feat in self.features:
+                p *= self.likelihoods[feat][cls].get(row[feat], 1e-9)
+            scores[cls] = p
+        return scores
+
+    def predict_proba(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Return normalised posterior probability for each class."""
+        rows = []
+        for _, row in X.iterrows():
+            raw   = self._raw_scores(row)
+            total = sum(raw.values()) or 1
+            rows.append({c: v / total for c, v in raw.items()})
+        return pd.DataFrame(rows, columns=self.classes)
+
+    def predict(self, X: pd.DataFrame) -> list:
+        """Return predicted class label for each sample."""
+        return self.predict_proba(X).idxmax(axis=1).tolist()
+
+    def accuracy(self, X: pd.DataFrame, y: pd.Series) -> float:
+        return sum(p == a for p, a in zip(self.predict(X), y)) / len(y)
+
+    # ── Display Learned Probability Tables ────────────────────
+    def display_probability_tables(self, X: pd.DataFrame, y: pd.Series):
+        N = len(y)
+
+        print("\n" + "=" * 65)
+        print("  STEP 1 — PRIOR PROBABILITIES  P(Product Quality)")
+        print("=" * 65)
+        for cls in self.classes:
+            cnt = int((y == cls).sum())
+            print(f"  P({cls:<12}) = {cnt}/{N} = {self.priors[cls]:.4f}")
+
+        print("\n" + "=" * 65)
+        print("  STEP 2 — LIKELIHOOD TABLE  P(Feature = value | Class)")
+        print("=" * 65)
+        cls0, cls1 = self.classes[0], self.classes[1]
+        for feat in self.features:
+            print(f"\n  ── {feat} ──")
+            print(f"  {'Value':<12}  {f'P(·|{cls0})':>16}  {f'P(·|{cls1})':>14}")
+            print(f"  {'─'*12}  {'─'*16}  {'─'*14}")
+            for val in self.vocab[feat]:
+                p0 = self.likelihoods[feat][cls0][val]
+                p1 = self.likelihoods[feat][cls1][val]
+                print(f"  {val:<12}  {p0:>16.4f}  {p1:>14.4f}")
+
+
+# ──────────────────────────────────────────────────────────────
+#  TRAIN THE MODEL
+# ──────────────────────────────────────────────────────────────
+X = df.drop('Product_Quality', axis=1)
+y = df['Product_Quality']
+
+print("\n\n" + "=" * 65)
+print("  PART A — TRAINING THE NAÏVE BAYES CLASSIFIER")
+print("=" * 65)
+
+model = NaiveBayesClassifier(laplace=True)
+model.fit(X, y)
+model.display_probability_tables(X, y)
+
+
+# ──────────────────────────────────────────────────────────────
+#  PART B — TESTING ON TRAINING DATA
+# ──────────────────────────────────────────────────────────────
+print("\n\n" + "=" * 65)
+print("  PART B — TESTING ON ALL TRAINING SAMPLES")
+print("=" * 65)
+
+preds = model.predict(X)
+proba = model.predict_proba(X)
+
+hdr = f"  {'#':<3} {'Actual':<13} {'Predicted':<13} {'P(Defective)':<16} {'P(Good)':<12} {'Status'}"
+print(f"\n{hdr}")
+print("  " + "─" * 60)
+
+for i, (actual, pred) in enumerate(zip(y, preds)):
+    d  = proba.iloc[i]['Defective']
+    g  = proba.iloc[i]['Good']
+    ok = "✓ Correct" if actual == pred else "✗ Wrong"
+    print(f"  {i+1:<3} {actual:<13} {pred:<13} {d:<16.4f} {g:<12.4f} {ok}")
+
+correct = sum(a == p for a, p in zip(y, preds))
+acc     = model.accuracy(X, y)
+print(f"\n  Correct Predictions : {correct} / {len(y)}")
+print(f"  Training Accuracy   : {acc:.2%}")
+
+
+# ──────────────────────────────────────────────────────────────
+#  CONFUSION MATRIX
+# ──────────────────────────────────────────────────────────────
+print("\n" + "=" * 65)
+print("  CONFUSION MATRIX")
+print("=" * 65)
+
+cm = defaultdict(int)
+for a, p in zip(y, preds):
+    cm[(a, p)] += 1
+
+cls0, cls1 = model.classes
+print(f"\n  {'':22} {'Pred: '+cls0:<22} {'Pred: '+cls1}")
+print("  " + "─" * 60)
+for actual_cls in model.classes:
+    row = "  " + f"  {'Act: '+actual_cls:<20}"
+    for pred_cls in model.classes:
+        row += f"  {cm[(actual_cls, pred_cls)]:<20}"
+    print(row)
+
+print(f"\n  Interpretation:")
+print(f"  TP (Defective → Defective) = {cm[('Defective','Defective')]}")
+print(f"  TN (Good      → Good)      = {cm[('Good','Good')]}")
+print(f"  FP (Good  → Defective)     = {cm[('Good','Defective')]}")
+print(f"  FN (Defective → Good)      = {cm[('Defective','Good')]}")
+
+
+# ──────────────────────────────────────────────────────────────
+#  PRECISION / RECALL / F1
+# ──────────────────────────────────────────────────────────────
+print("\n" + "=" * 65)
+print("  CLASSIFICATION METRICS")
+print("=" * 65)
+print(f"\n  {'Class':<14} {'Precision':>12} {'Recall':>10} {'F1-Score':>10} {'Support':>10}")
+print(f"  {'─'*14} {'─'*12} {'─'*10} {'─'*10} {'─'*10}")
+
+f1_scores = []
+for cls in model.classes:
+    tp = cm[(cls, cls)]
+    fp = sum(cm[(o, cls)] for o in model.classes if o != cls)
+    fn = sum(cm[(cls, o)] for o in model.classes if o != cls)
+    support = tp + fn
+
+    prec   = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    f1     = 2 * prec * recall / (prec + recall) if (prec + recall) else 0.0
+    f1_scores.append(f1)
+
+    print(f"  {cls:<14} {prec:>12.4f} {recall:>10.4f} {f1:>10.4f} {support:>10}")
+
+print(f"\n  {'─'*58}")
+print(f"  {'Overall Accuracy':<30} {acc:.4f}  ({acc:.2%})")
+print(f"  {'Macro-Avg F1-Score':<30} {np.mean(f1_scores):.4f}")
+
+
+# ──────────────────────────────────────────────────────────────
+#  PREDICTION ON NEW UNSEEN SAMPLES
+# ──────────────────────────────────────────────────────────────
+print("\n" + "=" * 65)
+print("  PREDICTION ON NEW UNSEEN SAMPLES")
+print("=" * 65)
+
+new_X = pd.DataFrame({
+    'Machine_Type': ['CNC',    'Lathe',  'Milling'],
+    'Temperature':  ['High',   'Normal', 'High'   ],
+    'Vibration':    ['High',   'Low',    'Low'    ],
+    'Shift':        ['Day',    'Night',  'Day'    ],
+})
+
+print(f"\n  Input Samples:\n{new_X.to_string(index=False)}\n")
+
+new_preds = model.predict(new_X)
+new_proba = model.predict_proba(new_X)
+
+print(f"  {'Sample':<10} {'Predicted':<16} {'P(Defective)':<18} {'P(Good)':<14} {'Confidence'}")
+print(f"  {'─'*10} {'─'*16} {'─'*18} {'─'*14} {'─'*10}")
+for i, pred in enumerate(new_preds):
+    d    = new_proba.iloc[i]['Defective']
+    g    = new_proba.iloc[i]['Good']
+    conf = max(d, g) * 100
+    print(f"  {i+1:<10} {pred:<16} {d:<18.4f} {g:<14.4f} {conf:.1f}%")
+
+
+# ──────────────────────────────────────────────────────────────
+#  SKLEARN COMPARISON (Verification)
+# ──────────────────────────────────────────────────────────────
+print("\n" + "=" * 65)
+print("  SKLEARN COMPARISON (CategoricalNB — Verification)")
+print("=" * 65)
+
+from sklearn.naive_bayes import CategoricalNB
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+
+enc   = OrdinalEncoder()
+X_enc = enc.fit_transform(X)
+y_enc = (y == 'Good').astype(int)          # 0 = Defective, 1 = Good
+
+sk_model = CategoricalNB(alpha=1.0)        # alpha=1 → same Laplace smoothing
+sk_model.fit(X_enc, y_enc)
+
+sk_raw   = sk_model.predict(X_enc)
+sk_preds = ['Good' if p == 1 else 'Defective' for p in sk_raw]
+sk_acc   = accuracy_score(y, sk_preds)
+
+print(f"\n  sklearn CategoricalNB Accuracy  : {sk_acc:.2%}")
+print(f"  Manual  NaiveBayes   Accuracy   : {acc:.2%}")
+
+print("\n  sklearn Classification Report:")
+print("  " + "─" * 45)
+report = classification_report(y, sk_preds, target_names=['Defective', 'Good'])
+for line in report.strip().split('\n'):
+    print(f"    {line}")
+
+print("\n  sklearn Confusion Matrix:")
+skl_cm = confusion_matrix(y, sk_preds, labels=['Defective', 'Good'])
+print(f"            Pred:Def  Pred:Good")
+for actual_label, row in zip(['Def', 'Good'], skl_cm):
+    print(f"  Act:{actual_label:<6}  {row[0]:<10}{row[1]}")
+
+...........................................................................................................................................................................................................
+
+
+
+
+
+
+Below is a simple Naïve Bayes Classifier Python program using the dataset shown in the image. The program trains the classifier, tests it on sample data, and computes the accuracy.
+
+Python Program
+# Naive Bayes Classifier using Industrial Manufacturing Dataset
+
+from sklearn.preprocessing import LabelEncoder
+from sklearn.naive_bayes import CategoricalNB
+from sklearn.metrics import accuracy_score
+import pandas as pd
+
+# Dataset from the question
+data = {
+    'Machine_Type': ['CNC', 'CNC', 'Lathe', 'Milling', 'Lathe'],
+    'Temperature': ['High', 'Normal', 'Normal', 'High', 'Normal'],
+    'Vibration': ['High', 'Low', 'Low', 'High', 'High'],
+    'Shift': ['Night', 'Day', 'Day', 'Night', 'Day'],
+    'Product_Quality': ['Defective', 'Good', 'Good', 'Defective', 'Good']
+}
+
+df = pd.DataFrame(data)
+
+# Encoding categorical data
+encoders = {}
+for col in df.columns:
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+    encoders[col] = le
+
+# Features and Target
+X = df[['Machine_Type', 'Temperature', 'Vibration', 'Shift']]
+y = df['Product_Quality']
+
+# Train Naive Bayes Classifier
+model = CategoricalNB()
+model.fit(X, y)
+
+# Testing on the same dataset
+y_pred = model.predict(X)
+
+# Accuracy
+accuracy = accuracy_score(y, y_pred)
+
+print("Predicted Labels:", y_pred)
+print("Actual Labels   :", list(y))
+print("Accuracy =", accuracy * 100, "%")
+
+# Sample Test Data
+sample = pd.DataFrame({
+    'Machine_Type': ['CNC'],
+    'Temperature': ['High'],
+    'Vibration': ['High'],
+    'Shift': ['Night']
+})
+
+# Encode sample data
+for col in sample.columns:
+    sample[col] = encoders[col].transform(sample[col])
+
+prediction = model.predict(sample)
+
+result = encoders['Product_Quality'].inverse_transform(prediction)
+
+print("\nSample Prediction:", result[0])
+Expected Output
+Predicted Labels: [0 1 1 0 1]
+Actual Labels   : [0, 1, 1, 0, 1]
+Accuracy = 100.0 %
+
+Sample Prediction: Defective
+Viva/Record Note
+
+Aim:
+To implement the Naïve Bayes classifier using an Industrial Manufacturing dataset and evaluate its accuracy.
+
+Algorithm:
+
+Load the dataset.
+Encode categorical attributes into numeric values.
+Separate features and target class.
+Train the Naïve Bayes classifier.
+Predict class labels for test data.
+Compute accuracy using Accuracy Score.
+Display predictions and accuracy.
+
+Result:
+The Naïve Bayes classifier is successfully implemented. The classifier predicts the product quality and achieves 100% accuracy on the given dataset.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+print("\n" + "=" * 65)
+print("  ✔  Naïve Bayes Classifier Implementation Complete!")
+print("=" * 65)
